@@ -1,0 +1,73 @@
+# =============================================================
+# ipc-auto-fill — GitHub 发布版 .gitignore
+# 放置位置：提交前放到仓库根（与 README.md 同级）：
+#   E:\deepseek\111\publish\.gitignore  →  仓库根 \.gitignore
+#
+# 原则：只提交「可复现的工程内容」，排除「本地产物/敏感/运行时数据」。
+#   - config.json     含本地坐标/串口等私有配置 → 排除（保留 config.example.json）
+#   - values.xlsx     为示例数据 → 保留（若含敏感业务数据可改排除，见文末注释）
+#   - 备份/日志/缓存  全部排除
+# =============================================================
+
+# ---------- Python ----------
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.venv/
+venv/
+env/
+build/
+dist/
+*.egg
+
+# ---------- 本地产物 / 运行期数据 ----------
+# 断点续传进度（自动生成，按机器/文件变化）
+host/.progress/
+.host/.progress/
+.progress/
+
+# 每次运行的审计日志（JSONL，含业务数据）
+host/audit/
+
+# 测试相关临时产物
+host/tests/__pycache__/
+
+# 备份文件
+*.bak
+*.bak_*
+*.bak_*/
+backup_*.zip
+backup/
+*.backup
+
+# 本地测试报告（开发期产物，不发布）
+测试报告-完善后.md
+host/测试报告-完善后.md
+
+# 临时/编辑器文件
+*.tmp
+*.swp
+*~
+.DS_Store
+Thumbs.db
+desktop.ini
+.idea/
+.vscode/
+
+# ---------- 配置与密钥 ----------
+# 真实配置（含本地坐标、串口、可扩展为敏感信息）→ 不发布
+host/config.json
+config.json
+
+# ---------- （按需选择）数据文件 ----------
+# 发布时排除真实数据表（含业务数据）；仓库改用 config.example.json 示例结构。
+values.xlsx
+# 如需发布某份示例数据，可注释掉上面的 values.xlsx 或显式添加：!host/示例.xlsx
+# values.xlsx
+# *.xlsx
+# *.xlsm
+
+# ---------- git / 备份 ----------
+.git/
+*.orig
