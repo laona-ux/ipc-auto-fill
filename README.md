@@ -201,7 +201,9 @@ python gui.py
 
 ## License
 
-（待定：发布前请补充开源许可证，如 MIT。）
+[MIT](./LICENSE) © 2026 laona-ux
+
+本项目采用 MIT 许可证发布，允许自由使用、修改、分发（含商用），详见 [LICENSE](./LICENSE) 文件。
 
 ---
 
