@@ -1,0 +1,78 @@
+{
+  "com_port": "COM3",
+  "baudrate": 115200,
+  "data_file": "values.xlsx",
+  "sheet": "Sheet1",
+  "header_row": 0,
+  "has_header": true,
+  "row_start": 1,
+  "row_end": 0,
+  "confirm": "enter",
+  "start_home": true,
+  "step_delay_ms": 300,
+  "steps": [
+    {
+      "type": "button",
+      "name": "进入压力界面"
+    },
+    {
+      "type": "input",
+      "col": "稳定压力(MPa)",
+      "name": "填入压力",
+      "round": 2,
+      "pre_keys": ["ctrl+a"],
+      "enter": true
+    },
+    {
+      "type": "button",
+      "name": "返回主界面"
+    },
+    {
+      "type": "button",
+      "name": "进入注浆界面"
+    },
+    {
+      "type": "input",
+      "col": "注浆量(m³)",
+      "name": "填入注浆量",
+      "round": 2,
+      "pre_keys": ["ctrl+a"],
+      "enter": true
+    },
+    {
+      "type": "button",
+      "name": "返回主界面"
+    },
+    {
+      "type": "button",
+      "name": "进入桩号界面"
+    },
+    {
+      "type": "input",
+      "col": "桩号",
+      "name": "填入桩号"
+    },
+    {
+      "type": "button",
+      "name": "返回主界面"
+    },
+    {
+      "type": "confirm",
+      "name": "本行已填完，核对无误后点『已确认』"
+    }
+  ],
+  "buttons": {
+    "进入桩号界面": [
+      { "type": "click", "x": 120, "y": 96, "name": "点开桩号录入" }
+    ],
+    "进入压力界面": [
+      { "type": "click", "x": 120, "y": 160, "name": "点开压力录入" }
+    ],
+    "进入注浆界面": [
+      { "type": "click", "x": 120, "y": 224, "name": "点开注浆录入" }
+    ],
+    "返回主界面": [
+      { "type": "key", "key": "escape", "name": "按 Esc 返回" }
+    ]
+  }
+}
