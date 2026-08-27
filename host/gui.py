@@ -410,10 +410,11 @@ class App:
         self.ui["btn_loc_down"] = ttk.Button(locnav, text="▼", width=3, command=lambda: self._locate_arrow(0, 1))
         self.ui["btn_loc_left"] = ttk.Button(locnav, text="◀", width=3, command=lambda: self._locate_arrow(-1, 0))
         self.ui["btn_loc_right"] = ttk.Button(locnav, text="▶", width=3, command=lambda: self._locate_arrow(1, 0))
-        for b in (self.ui["btn_loc_up"], self.ui["btn_loc_down"]):
-            b.pack(side="left")
-        for b in (self.ui["btn_loc_right"], self.ui["btn_loc_left"]):
-            b.pack(side="left", padx=(2, 0))
+        # 按实体键盘方向键的 T 形布局：上在中间，左/下/右在下一排。
+        self.ui["btn_loc_up"].grid(row=0, column=1, padx=1)
+        self.ui["btn_loc_left"].grid(row=1, column=0, padx=1)
+        self.ui["btn_loc_down"].grid(row=1, column=1, padx=1)
+        self.ui["btn_loc_right"].grid(row=1, column=2, padx=1)
         ttk.Label(top, text="步长:").grid(row=5, column=4, sticky="e")
         self.ui["loc_step"] = ttk.Spinbox(top, from_=1, to=500, increment=10, width=5)
         self.ui["loc_step"].set(10)
@@ -499,6 +500,8 @@ class App:
         ttk.Button(btnrow, text="删除所选", command=self._del_step, width=8).pack(side="left", padx=2)
         ttk.Button(btnrow, text="↑上移", command=self._move_up, width=6).pack(side="left", padx=2)
         ttk.Button(btnrow, text="↓下移", command=self._move_down, width=6).pack(side="left", padx=2)
+        ttk.Button(btnrow, text="▶ 测试所选步骤", command=self._test_selected_step,
+                   style="Accent.TButton", width=13).pack(side="left", padx=(10, 2))
 
         # 自定义按钮快捷执行区
         btnbar = ttk.LabelFrame(self.root, text="按钮快捷执行（点击即发送，可先归零）", padding=6)
@@ -1720,6 +1723,69 @@ class App:
                     return
         run.clear_progress()
         self.log("全部完成 ✅  本次共 %d 行。" % (end - begin))
+
+    # ---------------- 单步测试 ----------------
+    def _test_selected_step(self):
+        """立即执行步骤列表中当前选中的单个步骤，不读取 Excel。"""
+        if self.running:
+            messagebox.showinfo("提示", "正在执行其他任务，请稍候。")
+            return
+        idx = self._selected_index()
+        steps = self.objects.get(self.current_obj) or []
+        if idx is None or not (0 <= idx < len(steps)):
+            messagebox.showinfo("单步测试", "请先选中步骤流程中的一行。")
+            return
+        step = copy.deepcopy(steps[idx])
+        typ = step.get("type", "click")
+        if typ == "button":
+            messagebox.showinfo("单步测试", "按钮步骤不能单独测试，请测试按钮中的具体步骤。")
+            return
+        cfg = self._cfg_or_error()
+        if cfg is None or not cfg["com_port"]:
+            return
+        if not messagebox.askyesno("单步测试", "立即执行步骤『%s』？\n光标可能会移动或产生按键输入。"
+                                   % (step.get("name") or STEP_TYPE_LABELS.get(typ, typ))):
+            return
+        # 单步测试不叠加默认延时，保证“立即测试”。
+        step.pop("delay_ms", None)
+        cfg2 = {"com_port": cfg["com_port"], "baudrate": cfg["baudrate"],
+                "step_delay_ms": 0, "confirm": "none", "steps": [step],
+                "buttons": {}}
+        self.worker_cfg = copy.deepcopy(cfg2)
+        self._spawn(self._test_step_worker, cfg2)
+
+    def _test_step_worker(self, cfg):
+        link = None
+        try:
+            link = _open_link_bounded(cfg)
+            self.current_link = link
+            if not link.ping():
+                self.log("单步测试失败：Pico 无响应。")
+                return
+            step = cfg["steps"][0]
+            typ = step.get("type", "click")
+            # 坐标型动作需要先建立 Pico 内部原点；单步测试自动归零，不再另弹确认框。
+            if typ in _MOUSE_STEP_SET:
+                resp = link.send({"op": "home"})
+                if resp.get("ack") != "ok":
+                    raise RuntimeError("归零失败：%s" % resp)
+            cmds, _ = run.build_record_commands(cfg["steps"], {}, 0)
+            for cmd in cmds:
+                if self.stop_event.is_set():
+                    return
+                if cmd["op"] == "sleep":
+                    continue
+                resp = link.send(cmd)
+                if resp.get("ack") == "error":
+                    raise RuntimeError("Pico 执行失败：%s" % resp.get("msg"))
+            self.log("单步测试完成：%s ✅" % (step.get("name") or STEP_TYPE_LABELS.get(typ, typ)))
+        except Exception as e:
+            self.log("单步测试失败：%s" % e)
+        finally:
+            if self.current_link is link:
+                self.current_link = None
+            if link:
+                link.close()
 
     # ---------------- 按钮快捷执行 ----------------
     def _run_button(self, name):

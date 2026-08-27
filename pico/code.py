@@ -38,7 +38,7 @@ from adafruit_hid.mouse import Mouse
 # ---------------- 配置 ----------------
 BAUD = 115200              # 串口波特率，与 host/run.py 保持一致
 HOME_SLAM_STEPS = 60       # home 时向 (0,0) 方向甩的步数（每步上限 127，共可覆盖 7620 像素）
-STEP_DELAY_MS = 0.005      # 每步相对移动之间的停顿（秒）
+STEP_DELAY_MS = 0.001      # 每步相对移动之间的停顿（秒）；降低大范围移动延迟
 MOVED_MAX = 120            # 单次 move_to 允许的最大分步数，防死循环
 
 # ---------------- 初始化 ----------------
@@ -100,15 +100,26 @@ MODIFIER_ALIASES = {
 }
 
 def _token_to_keys(token):
-    """把一个键名令牌转成 Keycode 列表。字母/数字返回单键，别名返回映射键。"""
+    """把一个键名令牌转成 Keycode 列表，兼容没有 ord_to_keycode 的 HID 库。"""
     t = token.strip().lower()
     if t in KEY_ALIASES:
         return [KEY_ALIASES[t]]
-    if len(t) == 1 and (t.isalnum() or t in "-_.,;:"):
-        try:
-            return [Keycode.ord_to_keycode(ord(t.upper()))]
-        except (ValueError, TypeError):
-            return None
+    if len(t) != 1:
+        return None
+    c = t
+    # USB HID Usage ID：a-z 为 0x04-0x1d，数字 1-9 为 0x1e-0x26，0 为 0x27。
+    if "a" <= c <= "z":
+        return [0x04 + ord(c) - ord("a")]
+    if "1" <= c <= "9":
+        return [0x1D + ord(c) - ord("0")]
+    if c == "0":
+        return [0x27]
+    punctuation = {
+        "-": 0x2D, "_": 0x2D, ".": 0x37, ",": 0x36,
+        ";": 0x33, ":": 0x33,
+    }
+    if c in punctuation:
+        return [punctuation[c]]
     return None
 
 def press_key(spec):
@@ -260,5 +271,5 @@ while True:
             line, buf = buf.split(b"\n", 1)
             line = line.strip()
             if line:
-                handle(line.decode("utf-8", errors="replace"))
+                handle(line.decode("utf-8"))
     time.sleep(0.01)

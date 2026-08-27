@@ -186,7 +186,8 @@ def validate_key(key):
 
 class Link:
     def __init__(self, port, baud):
-        self.ser = serial.Serial(port, baud, timeout=1)
+        # 短超时配合按行读取，避免每条短 JSON 指令额外等待 1 秒。
+        self.ser = serial.Serial(port, baud, timeout=0.05, write_timeout=1)
 
     def close(self):
         try:
@@ -203,7 +204,8 @@ class Link:
         buf = b""
         deadline = time.time() + timeout
         while time.time() < deadline:
-            data = self.ser.read(512)
+            # Pico 每条应答以换行结束；按行读取可在收到完整应答后立即返回。
+            data = self.ser.read_until(b"\n")
             if data:
                 buf += data
                 while b"\n" in buf:
@@ -643,7 +645,7 @@ def run_once(link, cfg, records, start_row, dry_run=False, confirm_fn=None, head
                       "summary": summary, "confirm_required": confirm_mode == "enter",
                       "confirmed": confirmed, "status": "filled",
                       "time": time.strftime("%Y-%m-%d %H:%M:%S"), "run": "cli"})
-    print("\n全部完成 ✅  本次共 %d 行。" % (end - begin))
+    print("\n全部完成 [OK]  本次共 %d 行。" % (end - begin))
 
 
 def iter_target_steps(steps):
