@@ -40,6 +40,7 @@ BAUD = 115200              # 串口波特率，与 host/run.py 保持一致
 HOME_SLAM_STEPS = 60       # home 时向 (0,0) 方向甩的步数（每步上限 127，共可覆盖 7620 像素）
 STEP_DELAY_MS = 0.001      # 每步相对移动之间的停顿（秒）；降低大范围移动延迟
 MOVED_MAX = 120            # 单次 move_to 允许的最大分步数，防死循环
+REHOME_BEFORE_MOVE = True  # 人工移动鼠标后，下一次绝对定位先重新归零，避免坐标偏移
 
 # ---------------- 初始化 ----------------
 # 串口：GP0=TX -> CH340 RXD，GP1=RX <- CH340 TXD，GND 共地
@@ -157,8 +158,10 @@ def slam_home():
     cursor = (0, 0)
 
 def move_to(x, y):
-    """把光标移到绝对坐标 (x, y)，基于内部记录的上一次位置做相对移动。"""
+    """把光标移到绝对坐标；每次先重新归零，避免人工移动造成内部坐标偏移。"""
     global cursor
+    if REHOME_BEFORE_MOVE:
+        slam_home()
     dx = int(x) - cursor[0]
     dy = int(y) - cursor[1]
     # HID 相对移动单步上限 ±127，按最大差值分步（向上取整，保证每步不超限）
