@@ -26,6 +26,8 @@ except ImportError:
     sys.exit("缺少 pyserial，请先执行: pip install pyserial\n"
              "（配置文件读取还需要 openpyxl，一起装: pip install pyserial openpyxl）")
 
+import socket
+
 try:
     from openpyxl import load_workbook
 except ImportError:
@@ -235,6 +237,90 @@ class Link:
         if resp.get("ack") == "ok":
             return int(resp["x"]), int(resp["y"])
         return None
+
+
+class TcpLink:
+    """与 Link 接口完全一致，但通过 TCP 连接 ESP32 的 WiFi TCP Server。
+
+    协议不变：每行一条 JSON（\\n 结尾），板子回一行 {"ack":...} / {"pong":true}。
+    串口是「字节流 + reset_input_buffer」；TCP 是「字节流 + 读前丢弃残留」，二者语义对齐。
+    """
+
+    def __init__(self, host, port, connect_timeout=5.0, timeout=0.05):
+        self.sock = socket.create_connection((host, int(port)), timeout=connect_timeout)
+        self.sock.settimeout(timeout)
+        self._buf = b""
+
+    def close(self):
+        try:
+            self.sock.close()
+        except Exception:
+            pass
+
+    def _drain(self):
+        """读前丢弃缓冲区里残留的、上一次未读完的响应（对应串口 reset_input_buffer）。"""
+        self.sock.settimeout(0)
+        try:
+            while True:
+                try:
+                    d = self.sock.recv(4096)
+                except (socket.timeout, BlockingIOError, OSError):
+                    break
+                if not d:
+                    break
+        except Exception:
+            pass
+
+    def send(self, cmd, timeout=TIMEOUT):
+        self._drain()
+        self.sock.settimeout(timeout)
+        line = json.dumps(cmd, ensure_ascii=False) + "\n"
+        self.sock.sendall(line.encode("utf-8"))
+        buf = b""
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            try:
+                data = self.sock.recv(4096)
+            except socket.timeout:
+                data = b""
+            if not data:
+                break
+            buf += data
+            while b"\n" in buf:
+                raw, buf = buf.split(b"\n", 1)
+                raw = raw.strip()
+                if not raw:
+                    continue
+                try:
+                    obj = json.loads(raw.decode("utf-8", errors="replace"))
+                except ValueError:
+                    continue
+                if "pong" in obj or "ack" in obj:
+                    return obj
+        raise TimeoutError("指令无应答: %s" % cmd)
+
+    def ping(self):
+        for _ in range(3):
+            try:
+                return self.send({"op": "ping"}, timeout=PING_TIMEOUT).get("pong") is True
+            except TimeoutError:
+                time.sleep(0.5)
+        return False
+
+    def get_pos(self, timeout=TIMEOUT):
+        """查询板子当前跟踪的光标坐标 (x, y)；未归零或失败返回 None。"""
+        resp = self.send({"op": "get_pos"}, timeout=timeout)
+        if resp.get("ack") == "ok":
+            return int(resp["x"]), int(resp["y"])
+        return None
+
+
+def open_link(cfg):
+    """按 transport 选择串口或 WiFi(TCP)。cfg 需含 transport / com_port / baudrate / wifi_ip / wifi_port。"""
+    transport = (cfg.get("transport") or "serial").lower()
+    if transport == "wifi":
+        return TcpLink(cfg["wifi_ip"], int(cfg.get("wifi_port", 8080)))
+    return Link(cfg["com_port"], cfg.get("baudrate", 115200))
 
 
 # ---------------- 指令序列 / 步骤宏 ----------------
@@ -645,7 +731,7 @@ def run_once(link, cfg, records, start_row, dry_run=False, confirm_fn=None, head
                       "summary": summary, "confirm_required": confirm_mode == "enter",
                       "confirmed": confirmed, "status": "filled",
                       "time": time.strftime("%Y-%m-%d %H:%M:%S"), "run": "cli"})
-    print("\n全部完成 [OK]  本次共 %d 行。" % (end - begin))
+    print("\n全部完成 ✅  本次共 %d 行。" % (end - begin))
 
 
 def iter_target_steps(steps):

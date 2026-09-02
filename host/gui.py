@@ -212,7 +212,7 @@ def _open_link_bounded(cfg, timeout=3.0):
     holder = {"link": None}
     def do():
         try:
-            holder["link"] = run.Link(cfg["com_port"], cfg.get("baudrate", 115200))
+            holder["link"] = run.open_link(cfg)
         except Exception as e:
             res["err"] = e
     t = threading.Thread(target=do, daemon=True)
@@ -222,7 +222,9 @@ def _open_link_bounded(cfg, timeout=3.0):
     t.start()
     t.join(timeout)
     if t.is_alive():
-        raise TimeoutError("打开串口 %s 超时（端口可能被占用或设备已拔出）" % cfg["com_port"])
+        _desc = ("%s:%s" % (cfg.get("wifi_ip"), cfg.get("wifi_port", 8080))
+                 if (cfg.get("transport") or "serial") == "wifi" else cfg.get("com_port"))
+        raise TimeoutError("打开连接 %s 超时（端口可能被占用或设备已拔出/未上电）" % _desc)
     if "err" in res:
         try:
             _pending_links.remove(entry)
@@ -255,8 +257,10 @@ class App:
     def __init__(self, root):
         self.root = root
         root.title("工控机自动填入数值工具")
-        root.geometry("1100x820")
-        root.minsize(980, 720)
+        # 高度需容纳：连接面板（含新增「无线控制」3 行约 100px）+ 运行时才映射的
+        # 「按钮快捷执行/进度/日志」三块（合计约 520px）。沿用 820 会挤掉日志区。
+        root.geometry("1400x1000")
+        root.minsize(1100, 760)
 
         self.queue = queue.Queue()
         self.stop_event = threading.Event()
@@ -269,6 +273,8 @@ class App:
         self.running = False
         self.dirty = False        # 有未保存的修改（步骤/坐标/按钮）
         self.current_link = None  # worker/检测线程当前持有的串口连接（停止时强制释放用）
+        self._loc_link = None     # 坐标定位期间复用的持久连接（避免每次点击都重开串口触发板子复位）
+        self.device_type = "esp32"  # 当前选中的设备：esp32 / pico
 
         # 步骤流程对象：key -> 步骤列表。键 "__flow__" 是主流程，"btn:<名>" 是自定义按钮。
         self.objects = {"__flow__": []}
@@ -320,26 +326,44 @@ class App:
                 style.theme_use("clam")
             except Exception:
                 pass
-            self.COL_ACCENT = "#2563eb"
-            self.COL_ACCENT_TXT = "#1d4ed8"
-            self.COL_BG = "#f4f6f9"
+            # 工业控制台配色：高对比、状态明确、少装饰。
+            self.COL_ACCENT = "#0b5cab"
+            self.COL_ACCENT_TXT = "#084b8a"
+            self.COL_BG = "#eef2f5"
+            self.COL_PANEL = "#ffffff"
+            self.COL_BORDER = "#b8c4ce"
+            self.COL_TEXT = "#17212b"
+            self.COL_OK = "#16803c"
+            self.COL_DANGER = "#c62828"
             self.root.configure(bg=self.COL_BG)
-            style.configure(".", background=self.COL_BG, foreground="#1f2937",
+            style.configure(".", background=self.COL_BG, foreground=self.COL_TEXT,
                             font=(self.FONT, 10))
-            style.configure("TLabelframe", background=self.COL_BG, bordercolor="#cbd5e1")
+            style.configure("TLabelframe", background=self.COL_BG, bordercolor=self.COL_BORDER,
+                            relief="groove")
             style.configure("TLabelframe.Label", background=self.COL_BG,
-                            foreground=self.COL_ACCENT_TXT, font=(self.FONT, 10))
-            style.configure("TLabel", background=self.COL_BG, foreground="#1f2937")
-            style.configure("TCheckbutton", background=self.COL_BG, foreground="#1f2937")
+                            foreground=self.COL_ACCENT_TXT, font=(self.FONT, 10, "bold"))
+            style.configure("TLabel", background=self.COL_BG, foreground=self.COL_TEXT)
+            style.configure("TCheckbutton", background=self.COL_BG, foreground=self.COL_TEXT)
             style.map("TCheckbutton", background=[("active", self.COL_BG)])
-            style.configure("Accent.TButton", background=self.COL_ACCENT, foreground="white")
+            style.configure("TEntry", fieldbackground=self.COL_PANEL, padding=4)
+            style.configure("TCombobox", fieldbackground=self.COL_PANEL, padding=3)
+            style.configure("TSpinbox", fieldbackground=self.COL_PANEL, padding=3)
+            style.configure("Accent.TButton", background=self.COL_ACCENT, foreground="white",
+                            padding=(10, 5), font=(self.FONT, 10, "bold"))
             style.map("Accent.TButton",
-                      background=[("active", "#1d4ed8"), ("disabled", "#93c5fd")])
-            style.configure("Treeview", rowheight=26, fieldbackground="white", background="white",
-                            font=(self.FONT, 10))
+                      background=[("active", "#084b8a"), ("disabled", "#9fb9d1")])
+            style.configure("Test.TButton", background="#087f8c", foreground="white",
+                            padding=(8, 5))
+            style.map("Test.TButton", background=[("active", "#06636d"), ("disabled", "#9cc9ce")])
+            style.configure("Danger.TButton", background=self.COL_DANGER, foreground="white",
+                            padding=(10, 5), font=(self.FONT, 10, "bold"))
+            style.map("Danger.TButton", background=[("active", "#9f1d1d"), ("disabled", "#d9a2a2")])
+            style.configure("Treeview", rowheight=28, fieldbackground=self.COL_PANEL,
+                            background=self.COL_PANEL, font=(self.FONT, 10))
             style.configure("Treeview.Heading", font=(self.FONT, 10, "bold"),
-                            background="#e2e8f0", foreground="#0f172a")
-            style.map("Treeview", background=[("selected", "#dbeafe")], foreground=[("selected", "#1e3a8a")])
+                            background="#d8e0e7", foreground="#102a43", padding=(6, 5))
+            style.map("Treeview", background=[("selected", "#cfe3f5")],
+                      foreground=[("selected", "#0b3157")])
         except Exception:
             pass
 
@@ -350,7 +374,7 @@ class App:
         hdr.pack(fill="x", padx=12, pady=(10, 2))
         ttk.Label(hdr, text="工控机自动填数助手", font=(self.FONT, 16, "bold"),
                   foreground=self.COL_ACCENT_TXT).pack(side="left")
-        ttk.Label(hdr, text="·  Pico HID 注入（鼠标 + 键盘）", foreground="#64748b").pack(side="left", padx=(10, 0), pady=(4, 0))
+        ttk.Label(hdr, text="·  USB HID 注入（鼠标 + 键盘）", foreground="#64748b").pack(side="left", padx=(10, 0), pady=(4, 0))
 
         top = ttk.LabelFrame(self.root, text="连接与配置", padding=8)
         top.pack(fill="x", padx=8, pady=(6, 4))
@@ -365,8 +389,15 @@ class App:
         self.ui["baud"] = ttk.Combobox(top, width=8, values=["9600", "115200", "57600", "38400"])
         self.ui["baud"].set("115200")
         self.ui["baud"].grid(row=0, column=5, sticky="w")
-        self.ui["btn_test"] = ttk.Button(top, text="测试 Pico", command=self._test_link)
-        self.ui["btn_test"].grid(row=0, column=6, padx=8)
+        # 设备类型选择：ESP32-S3（当前固件）或 Pico (RP2040)。两者协议一致，仅作标识/持久化。
+        ttk.Label(top, text="设备:").grid(row=0, column=6, sticky="e", padx=(10, 2))
+        self.ui["device"] = ttk.Combobox(top, width=13, values=["ESP32-S3", "Pico (RP2040)"])
+        self.ui["device"].set("ESP32-S3")
+        self.ui["device"].grid(row=0, column=7, sticky="w")
+        self.ui["btn_test"] = ttk.Button(top, text="测试连接", command=self._test_link)
+        self.ui["btn_test"].grid(row=0, column=8, padx=8)
+        self.ui["btn_hid"] = ttk.Button(top, text="HID 连接检测", command=self._check_hid)
+        self.ui["btn_hid"].grid(row=0, column=9, padx=(0, 8))
 
         # 数据文件 / 工作表
         ttk.Label(top, text="数据文件:").grid(row=1, column=0, sticky="e", padx=(4, 2))
@@ -422,19 +453,59 @@ class App:
         ttk.Button(top, text="F8 记录到所选步骤", command=self._locate_capture).grid(row=5, column=6, padx=8)
         self.ui["loc_pos"] = ttk.Label(top, text="当前光标: (—, —)", foreground="#64748b")
         self.ui["loc_pos"].grid(row=5, column=7, sticky="w", padx=(8, 0))
+        # 直接输入目标坐标并跳转，便于快速定位，不必反复点击方向键。
+        ttk.Label(top, text="跳转坐标:").grid(row=5, column=8, sticky="e", padx=(10, 2))
+        self.ui["loc_target"] = ttk.Entry(top, width=13)
+        self.ui["loc_target"].insert(0, "0,0")
+        self.ui["loc_target"].grid(row=5, column=9, sticky="w")
+        ttk.Button(top, text="跳转", width=6, command=self._locate_goto).grid(row=5, column=10, padx=(4, 0))
         self.root.bind_all("<F8>", lambda ev: self._locate_capture())
 
         # 选项
         self.ui["start_home"] = tk.BooleanVar(value=True)
         self.ui["confirm"] = tk.BooleanVar(value=True)
-        ttk.Checkbutton(top, text="开始前把鼠标归零到屏幕左上角",
-                        variable=self.ui["start_home"]).grid(row=2, column=0, columnspan=3, sticky="w", padx=4)
+        # 流程运行前自动归零开关：置于坐标定位功能下方，与 start_home 配置项联动
+        ttk.Checkbutton(top, text="每一步执行前自动归零（每步流程先回屏幕左上角原点，避免坐标漂移）",
+                        variable=self.ui["start_home"]).grid(row=6, column=0, columnspan=9, sticky="w", padx=4, pady=(3, 0))
         ttk.Checkbutton(top, text="每行填完人工确认后再继续",
                         variable=self.ui["confirm"]).grid(row=2, column=3, columnspan=2, sticky="w")
         ttk.Label(top, text="步进延时(ms):").grid(row=2, column=5, sticky="e")
         self.ui["delay"] = ttk.Spinbox(top, from_=0, to=5000, increment=50, width=7)
         self.ui["delay"].set(300)
         self.ui["delay"].grid(row=2, column=6, sticky="w", padx=(4, 0))
+
+        # ---- 无线控制（WiFi）：独立子容器，内部自带列宽，避免与主面板列冲突/被遮挡 ----
+        # 背景：原先这些控件直接放在 row0/row2 —— row0 共 16 列总宽约 1700px 超出窗口可视宽度，
+        # 且 row2 的 column3-6 已被「人工确认/步进延时」占用，导致同格重叠被盖住而看不见。
+        # 排列紧凑（2 行）：窗口高度紧张，多一行都可能把底部日志区挤出可视范围。
+        wf = ttk.Frame(top)
+        wf.grid(row=7, column=0, columnspan=10, sticky="w", padx=4, pady=(8, 0))
+        ttk.Label(wf, text="无线控制（WiFi）", font=(self.FONT, 10, "bold"),
+                  foreground=self.COL_ACCENT_TXT).grid(row=0, column=0, sticky="w", padx=(0, 10))
+
+        ttk.Label(wf, text="传输:").grid(row=0, column=1, sticky="e", padx=(0, 2))
+        self.ui["transport"] = ttk.Combobox(wf, width=10, values=["串口", "无线(WiFi)"], state="readonly")
+        self.ui["transport"].set("串口")
+        self.ui["transport"].grid(row=0, column=2, sticky="w")
+        ttk.Label(wf, text="IP:").grid(row=0, column=3, sticky="e", padx=(12, 2))
+        self.ui["wifi_ip"] = ttk.Entry(wf, width=15)
+        self.ui["wifi_ip"].grid(row=0, column=4, sticky="w")
+        ttk.Label(wf, text="端口:").grid(row=0, column=5, sticky="e", padx=(12, 2))
+        self.ui["wifi_port"] = ttk.Entry(wf, width=7)
+        self.ui["wifi_port"].insert(0, "8080")
+        self.ui["wifi_port"].grid(row=0, column=6, sticky="w")
+
+        # WiFi 凭据（写入 ESP32 NVS，断电保存，无需改固件重烧）。先用串口连上板子再发。
+        ttk.Label(wf, text="WiFi名(SSID):").grid(row=1, column=0, sticky="e", padx=(0, 2), pady=(4, 0))
+        self.ui["wifi_ssid"] = ttk.Entry(wf, width=20)
+        self.ui["wifi_ssid"].grid(row=1, column=1, columnspan=3, sticky="we", pady=(4, 0))
+        ttk.Label(wf, text="密码:").grid(row=1, column=4, sticky="e", padx=(8, 2), pady=(4, 0))
+        self.ui["wifi_pass"] = ttk.Entry(wf, width=18, show="*")
+        self.ui["wifi_pass"].grid(row=1, column=5, columnspan=2, sticky="we", pady=(4, 0))
+        self.ui["btn_wifi"] = ttk.Button(wf, text="保存并连接", command=self._save_wifi)
+        self.ui["btn_wifi"].grid(row=1, column=7, padx=(10, 0), pady=(4, 0))
+        ttk.Label(wf, text="先串口连板 → 写入NVS → 自动取IP并切到无线；笔记本需与 ESP32 同网段",
+                  foreground="#64748b").grid(row=2, column=0, columnspan=8, sticky="w", pady=(2, 0))
 
         # 表格列选择 + 快速生成填入步骤
         colf = ttk.LabelFrame(self.root, text="选择要填入的表格列（可多选）", padding=8)
@@ -501,7 +572,7 @@ class App:
         ttk.Button(btnrow, text="↑上移", command=self._move_up, width=6).pack(side="left", padx=2)
         ttk.Button(btnrow, text="↓下移", command=self._move_down, width=6).pack(side="left", padx=2)
         ttk.Button(btnrow, text="▶ 测试所选步骤", command=self._test_selected_step,
-                   style="Accent.TButton", width=13).pack(side="left", padx=(10, 2))
+                   style="Test.TButton", width=13).pack(side="left", padx=(10, 2))
 
         # 自定义按钮快捷执行区
         btnbar = ttk.LabelFrame(self.root, text="按钮快捷执行（点击即发送，可先归零）", padding=6)
@@ -530,7 +601,7 @@ class App:
         self.ui["btn_start"] = ttk.Button(ops, text="▶ 开始填数 (F9)", style="Accent.TButton",
                                       command=self._start_fill)
         self.ui["btn_start"].pack(side="left", padx=(24, 0))
-        self.ui["btn_stop"] = ttk.Button(ops, text="■ 停止 (F10)", command=self._stop_worker, state="disabled")
+        self.ui["btn_stop"] = ttk.Button(ops, text="■ 停止 (F10)", command=self._stop_worker, style="Danger.TButton", state="disabled")
         self.ui["btn_stop"].pack(side="left", padx=6)
         self.ui["btn_confirm"] = ttk.Button(ops, text="✔ 已确认（空格/回车）",
                                             command=self._confirm_proceed, state="disabled")
@@ -894,7 +965,8 @@ class App:
         if self.running:
             messagebox.showinfo("提示", "任务运行中，请先『停止』再检测。")
             return
-        self.log("正在自动检测 Pico 串口…（逐个端口 ping，可能需要几秒）")
+        self._loc_close_link()  # 释放定位连接，避免端口冲突
+        self.log("正在自动检测设备串口…（逐个端口 ping，可能需要几秒）")
         threading.Thread(target=self._detect_worker, daemon=True).start()
 
     def _detect_worker(self):
@@ -1013,6 +1085,9 @@ class App:
         return {
             "com_port": self.ui["port"].get().strip(),
             "baudrate": self._int_field("baud", "波特率", 115200),
+            "transport": "wifi" if self.ui["transport"].get().startswith("无线") else "serial",
+            "wifi_ip": self.ui["wifi_ip"].get().strip(),
+            "wifi_port": self._int_field("wifi_port", "WiFi 端口", 8080),
             "data_file": self.ui["file"].get().strip(),
             "sheet": self.ui["sheet"].get().strip() or None,
             "header_row": self._int_field("header_row", "表头行", 0),
@@ -1024,11 +1099,59 @@ class App:
             "step_delay_ms": self._int_field("delay", "步进延时(ms)", 0),
             "steps": steps,
             "buttons": buttons,
+            "device_type": self._device_key(),
         }
+
+    def _device_key(self):
+        """把下拉框文本归一化为配置键：esp32 / pico。"""
+        v = (self.ui["device"].get() if "device" in self.ui else "ESP32-S3").lower()
+        return "pico" if "pico" in v else "esp32"
+
+    def _has_link(self, cfg):
+        """是否配置了可用链路：串口需 com_port，无线需 wifi_ip。"""
+        if (cfg.get("transport") or "serial") == "wifi":
+            return bool(cfg.get("wifi_ip"))
+        return bool(cfg.get("com_port"))
+
+    def _link_cfg(self, cfg):
+        """抽取连接相关字段，供 worker cfg 构造复用（保证无线模式也能拿对链路）。"""
+        return {
+            "transport": cfg.get("transport", "serial"),
+            "com_port": cfg.get("com_port", ""),
+            "baudrate": cfg.get("baudrate", 115200),
+            "wifi_ip": cfg.get("wifi_ip", ""),
+            "wifi_port": cfg.get("wifi_port", 8080),
+        }
+
+    def _link_desc(self, cfg):
+        """链路描述文本，用于日志（串口显示 COM 口，无线显示 IP:端口）。"""
+        if (cfg.get("transport") or "serial") == "wifi":
+            return "%s:%s" % (cfg.get("wifi_ip"), cfg.get("wifi_port", 8080))
+        return cfg.get("com_port", "")
+
+    def _toast(self, title, msg, kind="info"):
+        """关键结果弹窗（线程安全）。
+
+        窗口高度不足时 Tk 会直接『不映射』放不下的底部区块，日志区可能整个不可见，
+        只写日志会让用户以为没反应。所以连接/配网这类关键结果必须同时弹窗反馈。
+        """
+        def _show():
+            try:
+                {"info": messagebox.showinfo, "warn": messagebox.showwarning,
+                 "error": messagebox.showerror}.get(kind, messagebox.showinfo)(title, msg)
+            except Exception:
+                pass
+        try:
+            self.root.after(0, _show)
+        except Exception:
+            pass
 
     def apply_cfg_to_ui(self, cfg):
         self.ui["port"].set(cfg.get("com_port", ""))
         self.ui["baud"].set(str(cfg.get("baudrate", 115200)))
+        self.ui["transport"].set("无线(WiFi)" if cfg.get("transport") == "wifi" else "串口")
+        self.ui["wifi_ip"].delete(0, "end"); self.ui["wifi_ip"].insert(0, cfg.get("wifi_ip", ""))
+        self.ui["wifi_port"].delete(0, "end"); self.ui["wifi_port"].insert(0, str(cfg.get("wifi_port", 8080)))
         self.ui["file"].delete(0, "end"); self.ui["file"].insert(0, cfg.get("data_file", ""))
         self.ui["sheet"].set(cfg.get("sheet") or "")
         self.ui["header_row"].set(cfg.get("header_row", 0))
@@ -1038,6 +1161,8 @@ class App:
         self.ui["confirm"].set(cfg.get("confirm", "enter") == "enter")
         self.ui["start_home"].set(cfg.get("start_home", True))
         self.ui["delay"].set(cfg.get("step_delay_ms", 300))
+        self.ui["device"].set("Pico (RP2040)" if cfg.get("device_type") == "pico" else "ESP32-S3")
+        self.device_type = cfg.get("device_type", "esp32")
         # 重建对象
         flow = cfg.get("steps")
         if not flow and cfg.get("targets"):
@@ -1215,6 +1340,7 @@ class App:
                 self.ui["btn_cal"].configure(state="disabled" if value else "normal")
                 self.ui["btn_dry"].configure(state="disabled" if value else "normal")
                 self.ui["btn_test"].configure(state="disabled" if value else "normal")
+                self.ui["btn_hid"].configure(state="disabled" if value else "normal")
                 self.ui["btn_confirm"].configure(state="disabled")
                 if not value and self.stop_event.is_set():
                     self.ui["row_label"].configure(text="已停止")
@@ -1256,22 +1382,156 @@ class App:
 
     # ---------------- 串口测试 ----------------
     def _test_link(self):
+        self._loc_close_link()  # 释放定位连接，避免端口被占用导致测试打不开
         cfg = self._cfg_or_error()
         if cfg is None:
             return
-        self.log("正在测试 Pico 连接…")
+        self.log("正在测试 %s 连接（%s）…" % (self._device_key().upper(), self._link_desc(cfg)))
         thr = threading.Thread(target=self._test_worker, args=(cfg,), daemon=True)
         thr.start()
 
     def _test_worker(self, cfg):
+        dev = self._device_key().upper()
         link = None
         try:
             link = _open_link_bounded(cfg)
             self.current_link = link
             ok = link.ping()
-            self.log("Pico 在线 ✅" if ok else "Pico 无响应 ❌（检查串口、TX/RX 接线或固件）")
+            self.log("%s 在线 ✅（%s）" % (dev, self._link_desc(cfg)) if ok
+                     else "%s 无响应 ❌（检查链路、接线或固件）" % dev)
+            if ok:
+                self._toast("连接测试", "%s 在线 ✅\n链路：%s" % (dev, self._link_desc(cfg)))
+            else:
+                self._toast("连接测试", "%s 无响应 ❌\n链路：%s\n\n检查链路、接线或固件。" %
+                            (dev, self._link_desc(cfg)), kind="error")
         except Exception as e:
             self.log("连接失败: %s" % e)
+            self._toast("连接测试", "连接失败：\n%s" % e, kind="error")
+        finally:
+            if self.current_link is link:
+                self.current_link = None
+            if link:
+                link.close()
+
+    # ---------------- HID 连接检测（原生 USB → 工控机） ----------------
+    def _check_hid(self):
+        self._loc_close_link()  # 释放定位连接，避免端口被占用
+        cfg = self._cfg_or_error()
+        if cfg is None:
+            return
+        thr = threading.Thread(target=self._check_hid_worker, args=(cfg,), daemon=True)
+        thr.start()
+
+    def _check_hid_worker(self, cfg):
+        dev = self._device_key().upper()
+        link = None
+        try:
+            link = _open_link_bounded(cfg)
+            self.current_link = link
+            if not link.ping():
+                self.log("%s 链路无响应 ❌（先解决连接/固件，再测 HID）" % dev)
+                return
+            resp = link.send({"op": "usb_state"})
+            mounted = bool(resp.get("mounted"))
+            self._toast("HID 连接检测",
+                        ("✅ 工控机已枚举到 %s 的原生 USB 键鼠复合设备。\n\n"
+                         "若工控机仍『无反应』，问题在工控机侧：屏幕是否锁定、光标是否被甩到别的显示器、"
+                         "目标窗口是否激活。" % dev) if mounted else
+                        ("⚠️ 工控机未枚举到 %s 的 USB 键鼠设备。\n\n"
+                         "OTG→工控机 物理链路没通，依次排查：\n"
+                         "① OTG 线是否只充电无数据（最常见）→ 换带数据线的 USB 线；\n"
+                         "② 工控机 USB 口是否损坏/禁用 → 换主板背面口；\n"
+                         "③ 重插拔 OTG 两端。" % dev),
+                        kind="info" if mounted else "warn")
+            if mounted:
+                self.log("✅ HID 已就绪：工控机已枚举到 %s 的原生 USB 键鼠复合设备。" % dev)
+                self.log("   既然 HID 已就绪但工控机仍『无反应』，问题在工控机侧消费：")
+                self.log("   ① 工控机屏幕是否锁定（登录界面不接收应用层输入）；")
+                self.log("   ② 多显示器时光标被甩到了别的屏幕；③ 目标软件窗口未处于激活/最前。")
+            else:
+                self.log("⚠️ HID 未就绪：工控机没有枚举到 %s 的原生 USB 键鼠设备。" % dev)
+                self.log("   说明 OTG→工控机 这条物理链路没通，按以下顺序排查：")
+                self.log("   ① OTG 线是否只充电无数据——换一根确认带数据线的 USB 线（最常见）；")
+                self.log("   ② 工控机 USB 口是否损坏/被禁用——换插机箱背面主板口，或在设备管理器看有无『未知 USB 设备』；")
+                self.log("   ③ 接触不良——重插拔 OTG 口两端；")
+                self.log("   ④ 若把 OTG 临时改插『本机』，本机光标能动/能打字，则证明固件与线材都正常，问题在工控机口。")
+        except Exception as e:
+            self.log("HID 检测失败: %s" % e)
+        finally:
+            if self.current_link is link:
+                self.current_link = None
+            if link:
+                link.close()
+
+    # ---------------- WiFi 凭据（写入 ESP32 NVS，断电保存） ----------------
+    def _save_wifi(self):
+        ssid = self.ui["wifi_ssid"].get().strip()
+        passwd = self.ui["wifi_pass"].get()
+        if not ssid:
+            messagebox.showinfo("提示", "请先填写 WiFi 名称(SSID)。")
+            return
+        cfg = self._cfg_or_error()
+        if cfg is None:
+            return
+        # 保存 WiFi 必须先经串口连上板子（板子尚未联网时只能走 UART/COM）。
+        if not cfg.get("com_port"):
+            messagebox.showinfo("提示",
+                "保存 WiFi 需要先『串口』连接 ESP32（板子还没联网，只能经 COM 下发）。\n"
+                "请先在『串口』处选好 COM 口再点保存并连接。")
+            return
+        serial_cfg = dict(cfg)
+        serial_cfg["transport"] = "serial"   # 强制走串口下发 set_wifi
+        thr = threading.Thread(target=self._save_wifi_worker, args=(serial_cfg, ssid, passwd), daemon=True)
+        thr.start()
+
+    def _save_wifi_worker(self, cfg, ssid, passwd):
+        dev = self._device_key().upper()
+        link = None
+        try:
+            link = _open_link_bounded(cfg)
+            self.current_link = link
+            if not link.ping():
+                self.log("%s 串口无响应 ❌，无法下发 WiFi 配置（确认 COM 口与板子已上电）。" % dev)
+                self._toast("配网失败", "%s 串口无响应 ❌，无法下发 WiFi 配置。\n\n"
+                            "确认 COM 口选对、板子已上电，且操作台没被别的程序占用该端口。" % dev,
+                            kind="error")
+                return
+            resp = link.send({"op": "set_wifi", "ssid": ssid, "pass": passwd})
+            if resp.get("ack") != "ok":
+                self.log("❌ WiFi 配置下发失败: %s" % resp.get("msg", resp))
+                self._toast("配网失败", "WiFi 配置下发失败：\n%s" % resp.get("msg", resp), kind="error")
+                return
+            self.log("✅ WiFi 凭据已写入 %s 的 NVS（断电保存），正在联网…" % dev)
+            # 轮询 net_info，最多 ~20s 等待拿到 IP
+            ip = None
+            for i in range(10):
+                try:
+                    r = link.send({"op": "net_info"}, timeout=3.0)
+                except Exception:
+                    r = {}
+                if r.get("wifi") is True:
+                    ip = r.get("ip")
+                    break
+                time.sleep(2.0)
+            if ip:
+                self.root.after(0, lambda: self.ui["wifi_ip"].delete(0, "end"))
+                self.root.after(0, lambda: self.ui["wifi_ip"].insert(0, ip))
+                self.root.after(0, lambda: self.ui["transport"].set("无线(WiFi)"))
+                self.log("🌐 已连上 WiFi，ESP32 IP = %s（已自动填入『IP』并把传输切到无线）。" % ip)
+                self.log("   现在点『测试连接』即可经 WiFi 控制；串口仍作兜底保留。")
+                self._toast("配网成功",
+                            "已连上 WiFi ✅\nESP32 IP = %s\n\n已自动填入『IP』并把传输切到『无线(WiFi)』；\n"
+                            "点『测试连接』即可经 WiFi 控制，串口仍作兜底保留。" % ip)
+            else:
+                self.log("⚠️ 凭据已保存，但 %s 在 20s 内未连上 WiFi。" % dev)
+                self.log("   可能原因：SSID/密码错、信号弱、或该网络禁止新设备。请核对后重试『保存并连接』。")
+                self._toast("未连上 WiFi",
+                            "凭据已保存，但 %s 在 20 秒内未连上 WiFi。\n\n"
+                            "可能原因：SSID/密码错、信号弱、或该网络禁止新设备。\n"
+                            "请核对后重试『保存并连接』。" % dev, kind="warn")
+        except Exception as e:
+            self.log("WiFi 保存失败: %s" % e)
+            self._toast("配网失败", "WiFi 保存失败：\n%s" % e, kind="error")
         finally:
             if self.current_link is link:
                 self.current_link = None
@@ -1286,8 +1546,8 @@ class App:
         cfg = self._cfg_or_error()
         if cfg is None:
             return None
-        if not cfg["com_port"]:
-            messagebox.showinfo("提示", "请先选择串口（COM 口）。")
+        if not self._has_link(cfg):
+            messagebox.showinfo("提示", "请先配置连接：选串口（COM 口），或切到『无线(WiFi)』并填好 IP。")
             return None
         return cfg
 
@@ -1308,13 +1568,43 @@ class App:
     def _update_pos_label(self, x, y):
         self.ui["loc_pos"].configure(text="当前光标: (%d, %d)" % (x, y))
 
+    def _loc_close_link(self):
+        """释放坐标定位期间持有的持久连接。
+        在『测试连接 / 自动检测 / 开始运行 / 退出』等需要独占串口前调用，避免端口被占用。"""
+        if self._loc_link is not None:
+            try:
+                self._loc_link.close()
+            except Exception:
+                pass
+            self._loc_link = None
+
+    def _loc_ensure(self, cfg):
+        """取一条坐标定位用的持久连接：若已持有且仍在线则复用，否则（重新）打开。
+        复用连接可避免每次点击方向键都重开串口、触发板子复位，导致首条指令在启动期丢 ack（表现为『点了没反应』）。"""
+        link = self._loc_link
+        if link is not None:
+            try:
+                if link.ping():
+                    return link
+            except Exception:
+                pass
+            try:
+                link.close()
+            except Exception:
+                pass
+            self._loc_link = None
+        link = self._locate_open(cfg)
+        self._loc_link = link
+        return link
+
     def _locate_home(self):
         cfg = self._locate_get_cfg()
         if cfg is None:
             return
-        if not messagebox.askyesno("归零", "请先把工控机上的鼠标光标移到『屏幕左上角』，\n然后点『是』。"):
+        if not messagebox.askyesno("归零", "即将把工控机光标甩到屏幕左上角并建立坐标原点。\n（无需手动移动光标，点『是』即执行）"):
             return
-        link = self._locate_open(cfg)
+        # 注意：归零后不关闭连接，定位期间复用，便于后续方向键/跳转直接生效
+        link = self._loc_ensure(cfg)
         if link is None:
             return
         try:
@@ -1323,8 +1613,6 @@ class App:
             self.log("已归零：光标原点 = 屏幕左上角 (0, 0)。用方向键移动光标，对准后按 F8。")
         except Exception as e:
             self.log("归零失败: %s" % e)
-        finally:
-            link.close()
 
     def _locate_arrow(self, dxn, dyn):
         cfg = self._locate_get_cfg()
@@ -1335,14 +1623,19 @@ class App:
         except ValueError:
             self.log("步长不是整数，已使用默认 10。")
             step = 10
-        link = self._locate_open(cfg)
+        link = self._loc_ensure(cfg)
         if link is None:
             return
         try:
             pos = link.get_pos()
-            if pos is None:
-                self.log("还没建立原点，请先点『●归零』再移动光标。")
-                messagebox.showinfo("坐标定位", "请先点『●归零』：把工控机光标移到屏幕左上角建立坐标原点。")
+            if pos is None or pos[0] < 0 or pos[1] < 0:
+                # 未归零：自动 home 建立原点（等价于点『●归零』），保证操作必有响应
+                self.log("尚未建立原点，自动执行归零（home）…")
+                link.send({"op": "home"})
+                pos = link.get_pos()
+            if pos is None or pos[0] < 0 or pos[1] < 0:
+                self.log("归零后仍无法获取坐标，请检查设备连接/固件。")
+                messagebox.showwarning("坐标定位", "归零后仍未获取到坐标，请检查串口与设备固件。")
                 return
             nx, ny = pos[0] + dxn * step, pos[1] + dyn * step
             r = link.send({"op": "move_to", "x": nx, "y": ny})
@@ -1350,8 +1643,40 @@ class App:
                 self._update_pos_label(nx, ny)
         except Exception as e:
             self.log("移动光标失败: %s" % e)
-        finally:
-            link.close()
+
+    def _locate_goto(self):
+        """将光标直接移动到输入的绝对坐标，格式为 x,y。"""
+        cfg = self._locate_get_cfg()
+        if cfg is None:
+            return
+        raw = self.ui["loc_target"].get().replace("，", ",").replace(" ", "")
+        try:
+            x, y = [int(v) for v in raw.split(",")]
+            if x < 0 or y < 0:
+                raise ValueError
+        except (ValueError, TypeError):
+            messagebox.showwarning("坐标格式", "请输入非负整数坐标，例如：120,96")
+            return
+        link = self._loc_ensure(cfg)
+        if link is None:
+            return
+        try:
+            pos = link.get_pos()
+            if pos is None or pos[0] < 0 or pos[1] < 0:
+                self.log("尚未建立原点，自动执行归零（home）…")
+                link.send({"op": "home"})
+                pos = link.get_pos()
+            if pos is None or pos[0] < 0 or pos[1] < 0:
+                messagebox.showwarning("坐标定位", "归零后仍未获取到坐标，请检查串口与设备固件。")
+                return
+            resp = link.send({"op": "move_to", "x": x, "y": y})
+            if resp.get("ack") == "ok":
+                self._update_pos_label(x, y)
+                self.log("已跳转到坐标 (%d, %d)" % (x, y))
+            else:
+                self.log("坐标跳转失败：%s" % resp)
+        except Exception as e:
+            self.log("坐标跳转失败：%s" % e)
 
     def _locate_capture(self):
         """F8：把当前光标坐标写入所选步骤（单击/双击/长按/移动）。"""
@@ -1365,11 +1690,15 @@ class App:
             self.log("F8：请先在『步骤流程』里选中一个鼠标类步骤（单击/双击/长按/移动）。")
             messagebox.showinfo("坐标定位", "请先在「步骤流程」里选中一个鼠标类步骤\n（单击/双击/长按/移动），再按 F8。")
             return
-        link = self._locate_open(cfg)
+        link = self._loc_ensure(cfg)
         if link is None:
             return
         try:
             pos = link.get_pos()
+            if pos is None:
+                self.log("尚未建立原点，自动执行归零（home）…")
+                link.send({"op": "home"})
+                pos = link.get_pos()
             if pos is None:
                 self.log("还没建立原点，请先点『●归零』再按 F8。")
                 messagebox.showinfo("坐标定位", "请先点『●归零』，把光标挪到目标点后再按 F8。")
@@ -1382,14 +1711,13 @@ class App:
             self.log("已把坐标 (%d, %d) 写入步骤『%s』（记得 Ctrl+S 保存）" % (x, y, s.get("name") or s.get("type")))
         except Exception as e:
             self.log("记录坐标失败: %s" % e)
-        finally:
-            link.close()
 
     # ---------------- worker 线程封装 ----------------
     def _spawn(self, fn, cfg):
         self.stop_event.clear()
         self.confirm_event.set()
         self.current_link = None
+        self._loc_close_link()  # 运行前释放定位连接，交给 worker 独占串口
         self.interact = GuiInteract(self.queue, self.stop_event)
         self.worker = threading.Thread(target=self._worker_wrap, args=(fn, cfg), daemon=True)
         self.worker.start()
@@ -1488,6 +1816,7 @@ class App:
             except Exception:
                 pass
             self.current_link = None
+        self._loc_close_link()
         if self.worker:
             self.worker.join(timeout=3)
         self.root.destroy()
@@ -1587,8 +1916,8 @@ class App:
     def _validate_start(self, cfg):
         """启动前的统一校验：把问题一次性列出，返回问题列表（空 = 通过）。"""
         problems = []
-        if not cfg["com_port"]:
-            problems.append("请先选择串口（COM 口）。")
+        if not self._has_link(cfg):
+            problems.append("请先配置连接：选串口（COM 口），或切到『无线(WiFi)』并填好 IP。")
         if not cfg["data_file"]:
             problems.append("请先选择数据文件（Excel/CSV）。")
         if not cfg["steps"]:
@@ -1652,25 +1981,33 @@ class App:
                 self.log("Pico 无响应，任务中止。")
                 return
             self.log("Pico 在线 ✅")
-            if cfg["start_home"]:
-                if not self.interact.ask_yesno("归零校准",
-                                               "请先把工控机上的鼠标光标移到『屏幕左上角』，\n然后点『是』继续。"):
-                    self.log("用户取消，任务中止。")
-                    return
-                if self.stop_event.is_set():
-                    return
-                try:
-                    link.send({"op": "home"})
-                except TimeoutError:
-                    if self.stop_event.is_set():
-                        return
-                    raise
-                self.log("光标已归零到屏幕左上角")
             self._run_rows(link, cfg, records, start_row, header)
         finally:
             if self.current_link is link:
                 self.current_link = None
             link.close()
+
+    def _auto_home(self, link, cfg, tag="", force=False):
+        """自动归零到屏幕左上角原点。
+
+        - 流程每一步执行前归零：跟随 start_home 开关（force=False），保证
+          每一步坐标都从 (0,0) 精确出发，不受上一步真实鼠标移动或人工操作
+          造成的基准偏移影响。
+        - 人工确认后归零：force=True，无条件执行。因为确认期间用户可能移动
+          工控机真实鼠标，相对鼠标会在系统光标上叠加位移，使内部坐标基准偏移，
+          必须重新归零才能保证后续坐标动作从 (0,0) 精确出发。
+        """
+        if cfg.get("start_home") or force:
+            if self.stop_event.is_set():
+                return False
+            try:
+                link.send({"op": "home"})
+            except TimeoutError:
+                if self.stop_event.is_set():
+                    return False
+                raise
+            self.log("光标已归零到屏幕左上角%s" % tag)
+        return True
 
     def _run_rows(self, link, cfg, records, start_row, header=None):
         steps = run.expand_steps(cfg)
@@ -1703,11 +2040,19 @@ class App:
                 if c["op"] == "__confirm__":
                     if not confirm_fn(c.get("label", "确认")):
                         return
+                    # 人工确认期间用户可能移动工控机真实鼠标，使系统光标基准偏移；
+                    # 确认后强制归零，保证后续坐标动作从 (0,0) 精确出发。
+                    if not self._auto_home(link, cfg, "（人工确认后）", force=True):
+                        return
                     continue
                 if c["op"] == "sleep":
                     if not _interruptible_sleep(c["ms"], self.stop_event):
                         return
                     continue
+                # 每一步流程执行前自动归零：保证该步坐标从屏幕左上角原点 (0,0)
+                # 精确出发，不受上一步真实鼠标移动或人工操作造成的基准偏移影响。
+                if not self._auto_home(link, cfg, "（步骤前）"):
+                    return
                 try:
                     resp = link.send(c)
                 except TimeoutError:
@@ -1741,16 +2086,16 @@ class App:
             messagebox.showinfo("单步测试", "按钮步骤不能单独测试，请测试按钮中的具体步骤。")
             return
         cfg = self._cfg_or_error()
-        if cfg is None or not cfg["com_port"]:
+        if cfg is None or not self._has_link(cfg):
             return
         if not messagebox.askyesno("单步测试", "立即执行步骤『%s』？\n光标可能会移动或产生按键输入。"
                                    % (step.get("name") or STEP_TYPE_LABELS.get(typ, typ))):
             return
         # 单步测试不叠加默认延时，保证“立即测试”。
         step.pop("delay_ms", None)
-        cfg2 = {"com_port": cfg["com_port"], "baudrate": cfg["baudrate"],
-                "step_delay_ms": 0, "confirm": "none", "steps": [step],
-                "buttons": {}}
+        cfg2 = dict(self._link_cfg(cfg),
+                    step_delay_ms=0, confirm="none", steps=[step],
+                    buttons={})
         self.worker_cfg = copy.deepcopy(cfg2)
         self._spawn(self._test_step_worker, cfg2)
 
@@ -1764,11 +2109,13 @@ class App:
                 return
             step = cfg["steps"][0]
             typ = step.get("type", "click")
-            # 坐标型动作需要先建立 Pico 内部原点；单步测试自动归零，不再另弹确认框。
+            # 坐标型动作：仅当尚未建立原点时才补一次 home（不每次重置），保持坐标连续。
             if typ in _MOUSE_STEP_SET:
-                resp = link.send({"op": "home"})
-                if resp.get("ack") != "ok":
-                    raise RuntimeError("归零失败：%s" % resp)
+                pos = link.send({"op": "get_pos"})
+                if pos.get("ack") != "ok":
+                    resp = link.send({"op": "home"})
+                    if resp.get("ack") != "ok":
+                        raise RuntimeError("归零失败：%s" % resp)
             cmds, _ = run.build_record_commands(cfg["steps"], {}, 0)
             for cmd in cmds:
                 if self.stop_event.is_set():
@@ -1799,12 +2146,10 @@ class App:
         if not btn_steps:
             messagebox.showwarning("提示", "按钮不存在：%s" % name)
             return
-        cfg2 = {
-            "com_port": cfg["com_port"], "baudrate": cfg["baudrate"],
-            "start_home": cfg["start_home"], "step_delay_ms": cfg["step_delay_ms"],
-            "confirm": "none", "steps": copy.deepcopy(btn_steps),
-            "buttons": copy.deepcopy(cfg.get("buttons") or {}),
-        }
+        cfg2 = dict(self._link_cfg(cfg),
+                    start_home=cfg["start_home"], step_delay_ms=cfg["step_delay_ms"],
+                    confirm="none", steps=copy.deepcopy(btn_steps),
+                    buttons=copy.deepcopy(cfg.get("buttons") or {}))
         self.worker_cfg = copy.deepcopy(cfg2)
         self._spawn(self._button_worker, cfg2)
 
@@ -1817,20 +2162,6 @@ class App:
                 self.log("Pico 无响应，按钮未执行。")
                 return
             self.log("Pico 在线 ✅")
-            if cfg["start_home"]:
-                if not self.interact.ask_yesno("归零校准",
-                                               "请先把工控机上的鼠标光标移到『屏幕左上角』，\n然后点『是』执行按钮。"):
-                    self.log("用户取消，按钮未执行。")
-                    return
-                if self.stop_event.is_set():
-                    return
-                try:
-                    link.send({"op": "home"})
-                except TimeoutError:
-                    if self.stop_event.is_set():
-                        return
-                    raise
-                self.log("光标已归零到屏幕左上角")
             steps = run.expand_steps(cfg)
             cmds, summary = run.build_record_commands(steps, {}, cfg["step_delay_ms"])
             self.log("执行按钮，共 %d 条指令" % len(cmds))
@@ -1843,11 +2174,19 @@ class App:
                 if c["op"] == "__confirm__":
                     if not confirm_fn(c.get("label", "确认")):
                         return
+                    # 人工确认期间用户可能移动工控机真实鼠标，使系统光标基准偏移；
+                    # 确认后强制归零，保证后续坐标动作从 (0,0) 精确出发。
+                    if not self._auto_home(link, cfg, "（人工确认后）", force=True):
+                        return
                     continue
                 if c["op"] == "sleep":
                     if not _interruptible_sleep(c["ms"], self.stop_event):
                         return
                     continue
+                # 每一步流程执行前自动归零：保证该步坐标从屏幕左上角原点 (0,0)
+                # 精确出发，不受上一步真实鼠标移动或人工操作造成的基准偏移影响。
+                if not self._auto_home(link, cfg, "（步骤前）"):
+                    return
                 try:
                     resp = link.send(c)
                 except TimeoutError:
@@ -1914,11 +2253,24 @@ def main():
         root.destroy()
         return
     root.title("工控机自动填数助手")
-    root.geometry("1180x860")
-    root.minsize(960, 640)
+    # 高度放大到 1000：连接面板新增「无线控制」3 行（约 100px），
+    # 而「按钮快捷执行/进度/日志」三个区块（合计约 520px）是运行时才映射的，
+    # 沿用 860 会让日志区被挤出可视范围。屏幕为 2560x1440，余量充足。
+    root.geometry("1400x1000")
+    root.minsize(1100, 760)
     root.report_callback_exception = lambda exc, val, tb: _dump_crash("callback", exc, val, tb, root)
     try:
         App(root)
+        # 默认最大化：整个界面按 pack 顺序纵向排列，内容总高约 1700px，
+        # 高度不足时 Tk 会直接不映射（丢弃）放不下的底部区块（按钮栏/操作栏/进度/日志）。
+        # 最大化后可用高度约 1392px（2560x1440 屏），可保证底部四块都在。
+        try:
+            root.state("zoomed")
+        except Exception:
+            try:
+                root.attributes("-zoomed", True)
+            except Exception:
+                pass
         root.mainloop()
     except Exception as e:
         _dump_crash("mainloop", type(e), e, e.__traceback__, root)

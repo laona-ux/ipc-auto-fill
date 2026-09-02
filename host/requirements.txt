@@ -1,0 +1,5 @@
+# ipc-auto-fill 工控机填数助手 —— Python 依赖
+# 说明：tkinter 为 Python 标准库自带（安装 Python 时勾选 "tcl/tk" 即可），无需 pip 安装。
+pyserial==3.5
+openpyxl==3.1.5
+xlrd==2.0.2

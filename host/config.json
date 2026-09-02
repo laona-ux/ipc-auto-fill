@@ -1,0 +1,152 @@
+{
+  "com_port": "COM12",
+  "baudrate": 115200,
+  "transport": "wifi",
+  "wifi_ip": "192.168.11.10",
+  "wifi_port": 8080,
+  "data_file": "C:/Users/20527/Documents/注浆脚本.xlsx",
+  "sheet": "Sheet1",
+  "header_row": 0,
+  "has_header": true,
+  "row_start": 1,
+  "row_end": 0,
+  "confirm": "enter",
+  "start_home": true,
+  "step_delay_ms": 300,
+  "steps": [
+    {
+      "type": "click",
+      "name": "返回主界面",
+      "x": 210,
+      "y": 120
+    },
+    {
+      "type": "click",
+      "name": "参数",
+      "x": 100,
+      "y": 60
+    },
+    {
+      "type": "click",
+      "name": "压力参",
+      "x": 180,
+      "y": 10
+    },
+    {
+      "type": "input",
+      "name": "填入压力",
+      "col": "稳定压力(MPa)"
+    },
+    {
+      "type": "click",
+      "name": "退出",
+      "x": 180,
+      "y": 120
+    },
+    {
+      "type": "click",
+      "name": "填入注浆默认值",
+      "x": 80,
+      "y": 10
+    },
+    {
+      "type": "input",
+      "name": "填入注浆默认值",
+      "col": "稳定压力(MPa)"
+    },
+    {
+      "type": "click",
+      "name": "退出",
+      "x": 180,
+      "y": 120
+    },
+    {
+      "type": "click",
+      "name": "退出主界面",
+      "x": 210,
+      "y": 120
+    },
+    {
+      "type": "click",
+      "name": "进入主界面",
+      "x": 30,
+      "y": 80
+    },
+    {
+      "type": "click",
+      "name": "填入桩号",
+      "x": 90,
+      "y": 10
+    },
+    {
+      "type": "input",
+      "name": "填入桩号",
+      "col": "桩号",
+      "round": 2
+    },
+    {
+      "type": "click",
+      "name": "退出",
+      "x": 210,
+      "y": 120
+    },
+    {
+      "type": "click",
+      "name": "开始记录",
+      "x": 190,
+      "y": 20
+    },
+    {
+      "type": "confirm",
+      "name": "人工确认"
+    },
+    {
+      "type": "click",
+      "name": "退出主界面",
+      "x": 210,
+      "y": 130
+    },
+    {
+      "type": "click",
+      "name": "进入参数界面",
+      "x": 100,
+      "y": 60
+    },
+    {
+      "type": "click",
+      "name": "输入流量",
+      "x": 80,
+      "y": 10
+    },
+    {
+      "type": "input",
+      "name": "输入流量参",
+      "col": "注浆量(m³)",
+      "round": 2
+    },
+    {
+      "type": "click",
+      "name": "保存退出",
+      "x": 170,
+      "y": 120
+    },
+    {
+      "type": "click",
+      "name": "退出主界面",
+      "x": 210,
+      "y": 120
+    },
+    {
+      "type": "click",
+      "name": "退出主界面",
+      "x": 30,
+      "y": 80
+    },
+    {
+      "type": "confirm",
+      "name": "退出主界面"
+    }
+  ],
+  "buttons": {},
+  "device_type": "esp32"
+}
