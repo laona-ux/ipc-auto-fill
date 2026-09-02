@@ -6,6 +6,9 @@ __pycache__/
 .venv/
 venv/
 
+# 离线便携 Python 运行时（约 450MB，本地打包用，不进 git；从本机复制或重做即可）
+python/
+
 # 运行/审计日志（体积大、非源码，按需可取消忽略）
 host/audit/*.jsonl
 
