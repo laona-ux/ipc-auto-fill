@@ -1,29 +1,41 @@
-@echo off
+﻿@echo off
+chcp 65001 >nul
 setlocal
-cd /d "%~dp0"
+rem 工控机自动填数助手（host 目录版）—— 双击启动 GUI
 
-REM ---- 检查 Python ----
-where python >nul 2>nul
+cd /d "%~dp0"
 if errorlevel 1 (
-    echo [ERROR] 未找到 python。请安装 Python 3.10+ 并勾选 "Add python.exe to PATH"。
+    echo [错误] 进入本目录失败，请确认本 bat 在 host 文件夹内。
     pause
     exit /b 1
 )
 
-REM ---- 优先用本地 .venv，不存在则创建（避免污染系统 Python）----
-if not exist ".venv\Scripts\python.exe" (
-    echo [INFO] 创建本地虚拟环境 .venv ...
-    python -m venv .venv
+set "PY="
+if exist "C:\Users\20527\AppData\Local\Programs\Python\Python313\python.exe" (
+    set "PY=C:\Users\20527\AppData\Local\Programs\Python\Python313\python.exe"
+) else (
+    where py >nul 2>nul && set "PY=py"
+    if not defined PY (
+        where python >nul 2>nul && set "PY=python"
+    )
 )
-call .venv\Scripts\activate.bat
+if not defined PY (
+    echo [错误] 未找到 Python，请安装 Python 3.10+ 并勾选 "Add python.exe to PATH"。
+    pause
+    exit /b 1
+)
 
-REM ---- 安装依赖（离线工控机请提前在有网机器装好，或自备 wheels）----
-python -m pip install -q -r requirements.txt
+"%PY%" -c "import serial, openpyxl, xlrd, tkinter" >nul 2>&1
 if errorlevel 1 (
-    echo [WARN] 依赖安装失败（可能离线）。若已手动装好 pyserial/openpyxl/xlrd 可忽略。
+    echo [提示] 缺少依赖，正在尝试安装(pyserial/openpyxl/xlrd)...
+    "%PY%" -m pip install -r requirements.txt
 )
 
-REM ---- 启动 GUI 操作台（独立窗口）----
-echo [INFO] 启动 工控机自动填数助手 ...
-start "" python gui.py
-endlocal
+echo [信息] 正在启动 工控机自动填数助手 ...
+"%PY%" gui.py
+if errorlevel 1 (
+    echo.
+    echo [错误] 启动失败，请查看上方报错。
+    echo.
+)
+pause
